@@ -64,18 +64,19 @@ def generate_random_prime(bits: int = 512) -> int:
             return cand
 
 
-def generate_keys_for_duration(target_seconds: int = 65, steps_per_second: int = 10_000_000):
+def generate_keys_in_range(min_seconds: int = 30, max_seconds: int = 90, steps_per_second: int = 10_000_000):
     """
-    Beregner nøyaktig |p - q| slik at Fermat må iterere gjennom
-    ca. target_seconds * steps_per_second steg.
+    Trekker en tilfeldig tidsvarighet i intervallet [min_seconds, max_seconds]
+    og beregner avstanden |p - q| deretter.
     """
+    if min_seconds > max_seconds:
+        min_seconds, max_seconds = max_seconds, min_seconds
+
+    target_seconds = secrets.randbelow(max_seconds - min_seconds + 1) + min_seconds
     target_steps = target_seconds * steps_per_second
     p = generate_random_prime(bits=512)
 
-    # Matematisk nødvendig avstand: Delta = sqrt(8 * Steps * p)
     delta = math.isqrt(8 * target_steps * p)
-
-    # Legg til en liten tilfeldig støy så det ikke alltid treffer nøyaktig samme mønster
     delta += secrets.randbelow(10_000_000)
 
     sign = 1 if secrets.randbits(1) == 1 else -1
@@ -83,7 +84,7 @@ def generate_keys_for_duration(target_seconds: int = 65, steps_per_second: int =
     if q_cand % 2 == 0:
         q_cand += 1
 
-    print(f"\nSøker etter primtall q med differanse ~2^{delta.bit_length()} bits...")
+    print(f"\nGenererer nøkkel med tilfeldig mål ~{target_seconds}s (intervall {min_seconds}-{max_seconds}s)...")
     while not (is_prime(q_cand, k=40) and not is_mersenne(q_cand)):
         q_cand += 2
 
@@ -111,7 +112,7 @@ def load_or_create_keys():
     if os.path.exists(FILE_KEYS):
         with open(FILE_KEYS, "r", encoding="utf-8") as f:
             return json.load(f)
-    return generate_keys_for_duration(target_seconds=65)
+    return generate_keys_in_range(min_seconds=30, max_seconds=90)
 
 
 # --- Parallell Fermat-arbeider ---
@@ -342,44 +343,36 @@ def decrypt_file(keys: dict, custom_d: int = None):
     return True
 
 
-# --- Oppdatert utskrift i crack_and_decrypt ---
-
-def crack_and_decrypt(keys: dict):
+def crack_and_decrypt(keys: dict, max_allowed_seconds: int = 120, steps_per_second: int = 10_000_000):
     if not os.path.exists(FILE_ENCRYPTED):
         print(f"Mangler '{FILE_ENCRYPTED}'. Krypterer automatisk...")
         if not encrypt_file(keys):
             return
 
     n = keys["n"]
-    p, q = keys["p"], keys["q"]
-    diff = abs(p - q)
-
-    a_target = (p + q) // 2
-    a_base = math.isqrt(n)
-    if a_base * a_base < n:
-        a_base += 1
-    est_steps = a_target - a_base
+    max_steps = max_allowed_seconds * steps_per_second
 
     cpus = mp.cpu_count()
     print(f"\nStarter optimalisert Fermat-knekking over {cpus} kjerner...")
     print(f"Modulus N ({n.bit_length()} bits):\n{n}\n")
-    print(f"Avstand |p - q| ({diff.bit_length()} bits):\n{diff}\n")
-    print(f"Mål-steg: ca. {est_steps:,} steg")
+    print(f"Søker opp til maksimalt {max_steps:,} steg (~{max_allowed_seconds}s tak)...")
 
     t0 = time.perf_counter()
     res = parallel_fermat_factorization(
-        n, max_steps=est_steps + 10_000_000, est_steps=max(1, est_steps), num_workers=cpus
+        n, max_steps=max_steps, est_steps=max_steps, num_workers=cpus
     )
     t1 = time.perf_counter()
 
     if not res:
-        print("\nFaktorisering feilet eller nådde ikke målet.")
+        print(f"\nFaktorisering nådde maksgrensen ({max_steps:,} steg) uten funn.")
         return
 
     found_p, found_q = res
+    found_diff = abs(found_p - found_q)
     print(f"\nFaktorisering fullført på {t1 - t0:.2f} sekunder!")
-    print(f"Funnet p:\n{found_p}\n")
-    print(f"Funnet q:\n{found_q}\n")
+    print(f"Funnet p ({found_p.bit_length()} bits):\n{found_p}\n")
+    print(f"Funnet q ({found_q.bit_length()} bits):\n{found_q}\n")
+    print(f"Beregnet |p - q| ({found_diff.bit_length()} bits):\n{found_diff}\n")
 
     recovered_phi = (found_p - 1) * (found_q - 1)
     recovered_d = pow(keys["e"], -1, recovered_phi)
@@ -389,7 +382,7 @@ def crack_and_decrypt(keys: dict):
     decrypt_file(keys, custom_d=recovered_d)
 
 
-# --- Oppdatert hovedmeny med full utskrift ---
+# --- Hovedmeny ---
 
 def main():
     ensure_input_file(FILE_PLAIN)
@@ -407,8 +400,8 @@ def main():
     print("-" * 80)
     print("1: Krypter 'file.txt' -> 'encrypted.txt'")
     print("2: Dekrypter 'encrypted.txt' -> 'decrypted.txt' (med nøkkel d)")
-    print("3: KNEKK 'encrypted.txt' (Estimert tid: ~1 minutt)")
-    print("4: GENERER NYE NØKLER (Velg måltid i sekunder)")
+    print("3: KNEKK 'encrypted.txt' (Angi maks antatt søketid)")
+    print("4: GENERER NYE NØKLER (Velg min og maks sekunder for tilfeldig avstand)")
     print("q: Avslutt")
     print("-" * 80)
 
@@ -419,18 +412,23 @@ def main():
     elif valg == "2":
         decrypt_file(keys)
     elif valg == "3":
-        crack_and_decrypt(keys)
+        tak_str = input("Oppgi maks søketid i sekunder (default 120): ").strip()
+        tak = int(tak_str) if tak_str.isdigit() else 120
+        crack_and_decrypt(keys, max_allowed_seconds=tak)
     elif valg == "4":
-        sec_str = input("Oppgi ønsket beregningstid i sekunder (f.eks. 60, 90, 120): ").strip()
-        sec = int(sec_str) if sec_str.isdigit() else 60
-        new_keys = generate_keys_for_duration(target_seconds=sec)
+        min_s = input("Minimum tid i sekunder (f.eks. 30): ").strip()
+        max_s = input("Maksimum tid i sekunder (f.eks. 90): ").strip()
+        min_val = int(min_s) if min_s.isdigit() else 30
+        max_val = int(max_s) if max_s.isdigit() else 90
+
+        new_keys = generate_keys_in_range(min_seconds=min_val, max_seconds=max_val)
         print(f"\nNye 1024-bit nøkler generert og lagret til '{FILE_KEYS}'!")
-        print(f"Differanse satt for ca. {sec} sekunders kjøretid.")
         print("Husk å kjøre valg '1' (Krypter) før du tester knekkingen.")
     elif valg == "q":
         print("Avslutter.")
     else:
         print("Ugyldig valg.")
-        
+
+
 if __name__ == "__main__":
     main()
