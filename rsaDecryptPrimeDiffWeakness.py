@@ -13,19 +13,18 @@ FILE_DECRYPTED = "decrypted.txt"
 FILE_KEYS = "keys.json"
 
 DEFAULT_E = 65537
-CHUNK_SIZE = 10  # 10 bytes = 80 bits, trygt under 83-85 bits N
+CHUNK_SIZE = 120  # 120 bytes = 960 bits, trygt under 1024-bit modulus N
 
-# Prekalkulerte 64-bit heltallsmasker for kvadratiske rester (eliminerer >99.2% uten isqrt)
 MASK_64 = 0x202021202030213
 MASK_63 = 0x402483012450293
 MASK_65 = 0x1218A019866014613
 MASK_11 = 0x23B
 
 
-# --- Primtallsgenerering ( ~42 bits, ingen Mersenne) ---
+# --- Primtallsgenerering (512 bits) ---
 
-def is_prime(n: int, k: int = 30) -> bool:
-    """Miller-Rabin primtallstest for store heltall."""
+def is_prime(n: int, k: int = 40) -> bool:
+    """Miller-Rabin primtallstest."""
     if n < 2:
         return False
     if n in (2, 3):
@@ -53,33 +52,39 @@ def is_prime(n: int, k: int = 30) -> bool:
 
 
 def is_mersenne(p: int) -> bool:
-    """Sjekker om tallet er på formen 2^k - 1."""
     return (p + 1 & p) == 0
 
 
-def generate_random_prime(bits: int = 42) -> int:
-    """Genererer et tilfeldig 42-bit primtall."""
+def generate_random_prime(bits: int = 512) -> int:
     while True:
         cand = secrets.randbits(bits) | 1 | (1 << (bits - 1))
         if is_mersenne(cand):
             continue
-        if is_prime(cand):
+        if is_prime(cand, k=40):
             return cand
 
 
-def generate_keys_with_distance(target_diff: int = 30_000_000):
+def generate_keys_for_duration(target_seconds: int = 65, steps_per_second: int = 10_000_000):
     """
-    Genererer et nøkkelsett med p og q på ~42 bits
-    med definert differanse for kontrollert Fermat-tid.
+    Beregner nøyaktig |p - q| slik at Fermat må iterere gjennom
+    ca. target_seconds * steps_per_second steg.
     """
-    p = generate_random_prime(bits=42)
+    target_steps = target_seconds * steps_per_second
+    p = generate_random_prime(bits=512)
+
+    # Matematisk nødvendig avstand: Delta = sqrt(8 * Steps * p)
+    delta = math.isqrt(8 * target_steps * p)
+
+    # Legg til en liten tilfeldig støy så det ikke alltid treffer nøyaktig samme mønster
+    delta += secrets.randbelow(10_000_000)
 
     sign = 1 if secrets.randbits(1) == 1 else -1
-    q_cand = p + sign * (target_diff + secrets.randbelow(100_000))
+    q_cand = p + sign * delta
     if q_cand % 2 == 0:
         q_cand += 1
 
-    while not (is_prime(q_cand) and not is_mersenne(q_cand)):
+    print(f"\nSøker etter primtall q med differanse ~2^{delta.bit_length()} bits...")
+    while not (is_prime(q_cand, k=40) and not is_mersenne(q_cand)):
         q_cand += 2
 
     q = q_cand
@@ -106,10 +111,10 @@ def load_or_create_keys():
     if os.path.exists(FILE_KEYS):
         with open(FILE_KEYS, "r", encoding="utf-8") as f:
             return json.load(f)
-    return generate_keys_with_distance()
+    return generate_keys_for_duration(target_seconds=65)
 
 
-# --- Høyeffektiv parallell Fermat-arbeider ---
+# --- Parallell Fermat-arbeider ---
 
 def _fermat_worker(
     worker_id: int,
@@ -124,7 +129,7 @@ def _fermat_worker(
 ):
     stride = num_workers
     local_steps = 0
-    BATCH = 65536  # Stor batch for minimal synkroniserings-overhead
+    BATCH = 65536
 
     m64 = MASK_64
     m63 = MASK_63
@@ -142,7 +147,6 @@ def _fermat_worker(
         a = a_base + step
         b2 = a * a - n
 
-        # 4-trinns bitmask-filter: Kaster bort over 99.2% før math.isqrt() kalles
         if not ((m64 >> (b2 & 63)) & 1):
             continue
         if not ((m63 >> (b2 % 63)) & 1):
@@ -168,7 +172,7 @@ def _fermat_worker(
 def _progress_printer(global_counter, est_steps, stop_event, t0):
     bar_length = 30
     while not stop_event.is_set():
-        time.sleep(0.25)
+        time.sleep(0.3)
         current = global_counter.value
         elapsed = time.perf_counter() - t0
 
@@ -186,8 +190,8 @@ def _progress_printer(global_counter, est_steps, stop_event, t0):
         rem_sec = (est_steps - current) / speed if (speed > 0 and current < est_steps) else 0
 
         sys.stdout.write(
-            f"\rProgress: [{bar}] {pct:5.1f}% | {current/1e6:6.2f}M/{est_steps/1e6:6.2f}M | "
-            f"{speed/1e6:4.2f} Mstep/s | Tid: {int(elapsed)}s | ETA: {int(rem_sec)}s  "
+            f"\rProgress: [{bar}] {pct:5.1f}% | {current/1e6:7.2f}M/{est_steps/1e6:7.2f}M | "
+            f"{speed/1e6:5.2f} Mstep/s | Tid: {int(elapsed)}s | ETA: {int(rem_sec)}s   "
         )
         sys.stdout.flush()
 
@@ -257,9 +261,9 @@ def parallel_fermat_factorization(n: int, max_steps: int, est_steps: int, num_wo
 def ensure_input_file(filepath: str):
     if not os.path.exists(filepath):
         sample = (
-            "Dette er en testfil kryptert med 84-bits modulus N.\n"
-            "Primtallene p og q er rundt 2 billioner .\n"
-            "Bitmaske-filteret avviser 99.2% av kandidatene lynraskt!"
+            "Dette er en testfil kryptert med et 1024-bits RSA-modulus N.\n"
+            "Avstanden mellom p og q er dimensjonert slik at Fermat-angrepet\n"
+            "krever over 500 millioner iterasjoner og tar mer enn 1 minutt."
         )
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(sample)
@@ -318,8 +322,7 @@ def decrypt_file(keys: dict, custom_d: int = None):
             cur_bytes = min(CHUNK_SIZE, remaining)
             decrypted_bytes.extend(m.to_bytes(cur_bytes, byteorder="big"))
     except OverflowError:
-        print("\n[FEIL] OverflowError: 'encrypted.txt' matcher ikke nåværende nøkler.")
-        print("Løsning: Kjør valg '1' (Krypter) for å synkronisere kryptert fil.")
+        print("\n[FEIL] Nøklene matcher ikke krypteringen.")
         return False
 
     t1 = time.perf_counter()
@@ -357,13 +360,13 @@ def crack_and_decrypt(keys: dict):
 
     cpus = mp.cpu_count()
     print(f"\nStarter optimalisert Fermat-knekking over {cpus} kjerner...")
-    print(f"Modulus N:       {n} ({int(n).bit_length()} bits)")
-    print(f"Avstand |p - q|: {diff:,}")
+    print(f"Modulus N:       {n.bit_length()} bits")
+    print(f"Avstand |p - q|: {diff.bit_length()} bits (~{diff:.2e})")
     print(f"Mål-steg:        ca. {est_steps:,} steg")
 
     t0 = time.perf_counter()
     res = parallel_fermat_factorization(
-        n, max_steps=est_steps + 2_000_000, est_steps=est_steps, num_workers=cpus
+        n, max_steps=est_steps + 10_000_000, est_steps=max(1, est_steps), num_workers=cpus
     )
     t1 = time.perf_counter()
 
@@ -372,12 +375,11 @@ def crack_and_decrypt(keys: dict):
         return
 
     found_p, found_q = res
-    print(f"\nFaktorisering vellykket på {t1 - t0:.2f} sekunder!")
-    print(f"Funnet faktorer: {found_p} og {found_q}")
+    print(f"\nFaktorisering fullført på {t1 - t0:.2f} sekunder!")
 
     recovered_phi = (found_p - 1) * (found_q - 1)
     recovered_d = pow(keys["e"], -1, recovered_phi)
-    print(f"Rekonstruert d:  {recovered_d}")
+    print(f"Rekonstruert d:  {recovered_d.bit_length()} bits")
 
     print("\nDekrypterer filen med den knekte nøkkelen...")
     decrypt_file(keys, custom_d=recovered_d)
@@ -390,17 +392,17 @@ def main():
     keys = load_or_create_keys()
 
     print("=" * 70)
-    print("RSA VERKTØY")
+    print("RSA 1024-BIT FERMAT BENCHMARK")
     print("=" * 70)
-    print(f"Modulus n:       {keys['n']} ({int(keys['n']).bit_length()} bits)")
-    print(f"Primtall p:      {keys['p']} (~{keys['p'] / 1e12:.2f} billioner)")
-    print(f"Primtall q:      {keys['q']} (~{keys['q'] / 1e12:.2f} billioner)")
-    print(f"Avstand |p - q|: {keys['diff']:,}")
+    print(f"Modulus n:       {keys['n'].bit_length()} bits")
+    print(f"Primtall p:      {keys['p'].bit_length()} bits")
+    print(f"Primtall q:      {keys['q'].bit_length()} bits")
+    print(f"Avstand |p - q|: {keys['diff'].bit_length()} bits")
     print("-" * 70)
     print("1: Krypter 'file.txt' -> 'encrypted.txt'")
     print("2: Dekrypter 'encrypted.txt' -> 'decrypted.txt' (med nøkkel d)")
-    print("3: KNEKK 'encrypted.txt' med optimalisert Fermat -> 'decrypted.txt'")
-    print("4: GENERER NYE 42-BIT PRIMTALL ( tilfeldige)")
+    print("3: KNEKK 'encrypted.txt' (Estimert tid: ~1 minutt)")
+    print("4: GENERER NYE NØKLER (Velg måltid i sekunder)")
     print("q: Avslutt")
     print("-" * 70)
 
@@ -413,12 +415,12 @@ def main():
     elif valg == "3":
         crack_and_decrypt(keys)
     elif valg == "4":
-        dist_str = input("Oppgi ønsket avstand |p - q| (trykk Enter for ~30 mill): ").strip()
-        dist = int(dist_str) if dist_str.isdigit() else 30_000_000
-        new_keys = generate_keys_with_distance(dist)
-        print(f"\nNye nøkler generert og lagret til '{FILE_KEYS}'!")
-        print(f"Ny p: {new_keys['p']}, Ny q: {new_keys['q']}, Avstand: {new_keys['diff']:,}")
-        print("Husk å kjøre valg '1' (Krypter) før dekryptering.")
+        sec_str = input("Oppgi ønsket beregningstid i sekunder (f.eks. 60, 90, 120): ").strip()
+        sec = int(sec_str) if sec_str.isdigit() else 60
+        new_keys = generate_keys_for_duration(target_seconds=sec)
+        print(f"\nNye 1024-bit nøkler generert og lagret til '{FILE_KEYS}'!")
+        print(f"Differanse satt for ca. {sec} sekunders kjøretid.")
+        print("Husk å kjøre valg '1' (Krypter) før du tester knekkingen.")
     elif valg == "q":
         print("Avslutter.")
     else:
