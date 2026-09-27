@@ -342,6 +342,8 @@ def decrypt_file(keys: dict, custom_d: int = None):
     return True
 
 
+# --- Oppdatert utskrift i crack_and_decrypt ---
+
 def crack_and_decrypt(keys: dict):
     if not os.path.exists(FILE_ENCRYPTED):
         print(f"Mangler '{FILE_ENCRYPTED}'. Krypterer automatisk...")
@@ -360,9 +362,9 @@ def crack_and_decrypt(keys: dict):
 
     cpus = mp.cpu_count()
     print(f"\nStarter optimalisert Fermat-knekking over {cpus} kjerner...")
-    print(f"Modulus N:       {n.bit_length()} bits")
-    print(f"Avstand |p - q|: {diff.bit_length()} bits (~{diff:.2e})")
-    print(f"Mål-steg:        ca. {est_steps:,} steg")
+    print(f"Modulus N ({n.bit_length()} bits):\n{n}\n")
+    print(f"Avstand |p - q| ({diff.bit_length()} bits):\n{diff}\n")
+    print(f"Mål-steg: ca. {est_steps:,} steg")
 
     t0 = time.perf_counter()
     res = parallel_fermat_factorization(
@@ -376,35 +378,39 @@ def crack_and_decrypt(keys: dict):
 
     found_p, found_q = res
     print(f"\nFaktorisering fullført på {t1 - t0:.2f} sekunder!")
+    print(f"Funnet p:\n{found_p}\n")
+    print(f"Funnet q:\n{found_q}\n")
 
     recovered_phi = (found_p - 1) * (found_q - 1)
     recovered_d = pow(keys["e"], -1, recovered_phi)
-    print(f"Rekonstruert d:  {recovered_d.bit_length()} bits")
+    print(f"Rekonstruert d ({recovered_d.bit_length()} bits):\n{recovered_d}\n")
 
-    print("\nDekrypterer filen med den knekte nøkkelen...")
+    print("Dekrypterer filen med den knekte nøkkelen...")
     decrypt_file(keys, custom_d=recovered_d)
 
 
-# --- Hovedmeny ---
+# --- Oppdatert hovedmeny med full utskrift ---
 
 def main():
     ensure_input_file(FILE_PLAIN)
     keys = load_or_create_keys()
 
-    print("=" * 70)
+    print("=" * 80)
     print("RSA 1024-BIT FERMAT BENCHMARK")
-    print("=" * 70)
-    print(f"Modulus n:       {keys['n'].bit_length()} bits")
-    print(f"Primtall p:      {keys['p'].bit_length()} bits")
-    print(f"Primtall q:      {keys['q'].bit_length()} bits")
-    print(f"Avstand |p - q|: {keys['diff'].bit_length()} bits")
-    print("-" * 70)
+    print("=" * 80)
+    print(f"Modulus n ({keys['n'].bit_length()} bits):\n{keys['n']}\n")
+    print(f"Primtall p ({keys['p'].bit_length()} bits):\n{keys['p']}\n")
+    print(f"Primtall q ({keys['q'].bit_length()} bits):\n{keys['q']}\n")
+    print(f"Offentlig eksponent e:\n{keys['e']}\n")
+    print(f"Privat eksponent d ({keys['d'].bit_length()} bits):\n{keys['d']}\n")
+    print(f"Avstand |p - q| ({keys['diff'].bit_length()} bits):\n{keys['diff']}\n")
+    print("-" * 80)
     print("1: Krypter 'file.txt' -> 'encrypted.txt'")
     print("2: Dekrypter 'encrypted.txt' -> 'decrypted.txt' (med nøkkel d)")
     print("3: KNEKK 'encrypted.txt' (Estimert tid: ~1 minutt)")
     print("4: GENERER NYE NØKLER (Velg måltid i sekunder)")
     print("q: Avslutt")
-    print("-" * 70)
+    print("-" * 80)
 
     valg = input("Velg handling (1/2/3/4/q): ").strip().lower()
 
@@ -425,7 +431,6 @@ def main():
         print("Avslutter.")
     else:
         print("Ugyldig valg.")
-
-
+        
 if __name__ == "__main__":
     main()
